@@ -39,7 +39,8 @@ MongoDB    Users, subjects, questions, competitions, attempts,
 - Student dashboard with real MongoDB statistics.
 - Competition listing, joining, timed attempts, answer saving, review marking, submission, and results.
 - Admin competition and MCQ management.
-- A 50-question sample bank spanning Java, Python, data structures, databases, web development, operating systems, networking, and aptitude. Missing sample subjects/questions are added safely when the API starts.
+- An 80-question sample bank with at least 10 questions for each of eight subjects: Java, Python, data structures, databases, web development, operating systems, networking, and aptitude. Missing sample subjects/questions are added safely when the API starts.
+- Competitions require at least 10 distinct questions from their selected subject before they can be created or started.
 - Administrators can start a scheduled test from the competition list, then share its private entry code with students.
 - Admin user, subject, learning, announcement, result, and question management.
 - Practice mode and learning materials.

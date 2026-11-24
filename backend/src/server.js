@@ -11,6 +11,25 @@ import { auth, adminOnly } from './middleware.js';
 import { ensureSampleQuestionBank } from './sampleData.js';
 
 const app = express();
+const MIN_COMPETITION_QUESTIONS = 10;
+
+async function validateCompetitionQuestions(questionIds, subject) {
+  const ids = Array.isArray(questionIds)
+    ? [...new Set(questionIds.map(question => String(question?._id || question)))]
+    : [];
+  if (ids.length < MIN_COMPETITION_QUESTIONS) {
+    return `A quiz must contain at least ${MIN_COMPETITION_QUESTIONS} questions.`;
+  }
+  if (ids.some(id => !mongoose.isValidObjectId(id))) {
+    return 'Select valid questions from the question bank.';
+  }
+  const matchingCount = await Question.countDocuments({ _id: { $in: ids }, subject });
+  if (matchingCount !== ids.length) {
+    return 'All quiz questions must belong to the selected subject.';
+  }
+  return null;
+}
+
 const allowedOrigins = new Set([
   process.env.CLIENT_URL || 'http://localhost:5173',
   'http://localhost:5173',
@@ -197,7 +216,11 @@ app.post('/api/competitions/:id/start', auth, async (req, res) => {
   if (!competition) return res.status(404).json({ message: 'Competition not found' });
   if (!competition.published) return res.status(400).json({ message: 'Competition is not published' });
   if (competitionStatus(competition) !== 'Live') return res.status(400).json({ message: 'Competition is not currently live' });
-  if (!competition.questions.length) return res.status(400).json({ message: 'This competition has no questions yet' });
+  const questionError = await validateCompetitionQuestions(
+    competition.questions.map(question => question._id),
+    competition.subject
+  );
+  if (questionError) return res.status(400).json({ message: questionError });
   if (!competition.participants.some(id => String(id) === String(req.user._id))) return res.status(403).json({ message: 'Join the competition before starting' });
 
   let attempt = await Attempt.findOne({ user: req.user._id, competition: competition._id });
@@ -545,6 +568,9 @@ app.get('/api/admin/stats', auth, adminOnly, async (_req, res) => {
   });
 });
 
+app.get('/api/admin/subjects', auth, adminOnly, async (_req, res) => {
+  res.json({ subjects: await Subject.find().sort({ name: 1 }) });
+});
 app.post('/api/admin/subjects', auth, adminOnly, async (req, res) => {
   const { name, description, topics, icon, active } = req.body;
   if (!name?.trim()) return res.status(400).json({ message: 'Subject name is required' });
@@ -619,7 +645,8 @@ app.get('/api/admin/competitions', auth, adminOnly, async (_req, res) => {
 app.post('/api/admin/competitions/:id/activate', auth, adminOnly, async (req, res) => {
   const competition = await Competition.findById(req.params.id);
   if (!competition) return res.status(404).json({ message: 'Competition not found' });
-  if (!competition.questions.length) return res.status(400).json({ message: 'Add at least one question before starting this test' });
+  const questionError = await validateCompetitionQuestions(competition.questions, competition.subject);
+  if (questionError) return res.status(400).json({ message: questionError });
 
   const now = new Date();
   competition.startAt = now;
@@ -678,7 +705,9 @@ app.post('/api/admin/competitions', auth, adminOnly, async (req, res) => {
   if (new Date(endAt) <= new Date(startAt)) return res.status(400).json({ message: 'End date must be after start date' });
   if (Number(durationMinutes) < 1) return res.status(400).json({ message: 'Duration must be at least 1 minute' });
   if (Number(maxParticipants) < 0) return res.status(400).json({ message: 'Maximum participants cannot be negative' });
-  const body = { title, subject, description, startAt, endAt, durationMinutes, difficulty, status, published, negativeMarking, randomizeQuestions, randomizeOptions, maxParticipants, totalMarks, questions: questions || [],
+  const questionError = await validateCompetitionQuestions(questions, subject);
+  if (questionError) return res.status(400).json({ message: questionError });
+  const body = { title, subject, description, startAt, endAt, durationMinutes, difficulty, status, published, negativeMarking, randomizeQuestions, randomizeOptions, maxParticipants, totalMarks, questions: [...new Set(questions.map(String))],
     code: (req.body.code || crypto.randomBytes(4).toString('hex')).trim().toUpperCase() };
   res.status(201).json({ competition: await Competition.create(body) });
 });
@@ -687,6 +716,8 @@ app.put('/api/admin/competitions/:id', auth, adminOnly, async (req, res) => {
   if (!title?.trim() || !subject || !startAt || !endAt || !durationMinutes) return res.status(400).json({ message: 'Title, subject, schedule, and duration are required' });
   if (new Date(endAt) <= new Date(startAt)) return res.status(400).json({ message: 'End date must be after start date' });
   if (Number(durationMinutes) < 1) return res.status(400).json({ message: 'Duration must be at least 1 minute' });
+  const questionError = await validateCompetitionQuestions(questions, subject);
+  if (questionError) return res.status(400).json({ message: questionError });
   const updates = { title, subject, description, startAt, endAt, durationMinutes, difficulty, status, published, negativeMarking, randomizeQuestions, randomizeOptions, maxParticipants, totalMarks, questions };
   res.json({ competition: await Competition.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true }) });
 });

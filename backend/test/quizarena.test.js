@@ -15,6 +15,21 @@ let subject;
 let adminToken;
 let studentToken;
 
+async function createQuizQuestions(count = 10, marks = 1, negativeMarks = 0) {
+  return Question.insertMany(Array.from({ length: count }, (_, index) => ({
+    subject: subject._id,
+    statement: `Quiz question ${index + 1}`,
+    options: [
+      { text: 'Correct answer', isCorrect: true },
+      { text: 'Incorrect answer', isCorrect: false },
+      { text: 'Another answer', isCorrect: false },
+      { text: 'Last answer', isCorrect: false }
+    ],
+    marks,
+    negativeMarks
+  })));
+}
+
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
@@ -69,12 +84,16 @@ describe('competition and question management', () => {
   it('creates a shared sample question bank without duplicating questions on repeat runs', async () => {
     await ensureSampleQuestionBank();
     await ensureSampleQuestionBank();
-    expect(await Question.countDocuments()).toBe(50);
+    expect(await Question.countDocuments()).toBe(80);
     expect(await Subject.countDocuments({ name: { $in: sampleSubjects.map(item => item.name) } })).toBe(8);
     const bank = await request(app).get('/api/admin/questions').set('Authorization', `Bearer ${adminToken}`);
     const practice = await request(app).get('/api/practice/questions').set('Authorization', `Bearer ${studentToken}`);
-    expect(bank.body.questions).toHaveLength(50);
+    expect(bank.body.questions).toHaveLength(80);
     expect(practice.body.questions).toHaveLength(50);
+    for (const sampleSubject of sampleSubjects) {
+      const subjectRecord = await Subject.findOne({ name: sampleSubject.name });
+      expect(await Question.countDocuments({ subject: subjectRecord._id })).toBeGreaterThanOrEqual(10);
+    }
   });
 
   it('allows an administrator to create an MCQ and competition', async () => {
@@ -84,14 +103,28 @@ describe('competition and question management', () => {
       difficulty: 'Easy', marks: 2, negativeMarks: 1, explanation: 'extends creates inheritance'
     });
     expect(question.status).toBe(201);
+    const additionalQuestions = await createQuizQuestions(9);
     const now = new Date();
     const competition = await request(app).post('/api/admin/competitions').set('Authorization', `Bearer ${adminToken}`).send({
       title: 'Test Competition', subject: subject._id, description: 'Test',
       startAt: new Date(now.getTime() - 60000).toISOString(), endAt: new Date(now.getTime() + 3600000).toISOString(),
       durationMinutes: 30, difficulty: 'Easy', status: 'Live', published: true,
-      negativeMarking: true, questions: [question.body.question._id], totalMarks: 2
+      negativeMarking: true, questions: [question.body.question._id, ...additionalQuestions.map(item => item._id)], totalMarks: 11
     });
     expect(competition.status).toBe(201);
+    expect(competition.body.competition.questions).toHaveLength(10);
+  });
+
+  it('rejects competitions with fewer than ten distinct questions', async () => {
+    const questions = await createQuizQuestions(9);
+    const now = new Date();
+    const response = await request(app).post('/api/admin/competitions').set('Authorization', `Bearer ${adminToken}`).send({
+      title: 'Too-short Quiz', subject: subject._id, description: 'Test',
+      startAt: new Date(now.getTime() - 60000).toISOString(), endAt: new Date(now.getTime() + 3600000).toISOString(),
+      durationMinutes: 30, questions: questions.map(item => item._id)
+    });
+    expect(response.status).toBe(400);
+    expect(response.body.message).toMatch(/at least 10 questions/i);
   });
 
   it('rejects a question without exactly one correct option', async () => {
@@ -106,14 +139,10 @@ describe('competition and question management', () => {
 
 describe('quiz security and grading', () => {
   it('lets an admin start a scheduled test and a student join and submit it with the shared code', async () => {
-    const question = await Question.create({
-      subject: subject._id, statement: 'What is 2 + 2?',
-      options: [{ text: '3', isCorrect: false }, { text: '4', isCorrect: true }, { text: '5', isCorrect: false }, { text: '6', isCorrect: false }],
-      marks: 1
-    });
+    const questions = await createQuizQuestions();
     const competition = await Competition.create({
       title: 'Ready to Start', subject: subject._id, code: 'START1',
-      questions: [question._id], startAt: new Date(Date.now() + 3600000),
+      questions: questions.map(question => question._id), startAt: new Date(Date.now() + 3600000),
       endAt: new Date(Date.now() + 7200000), durationMinutes: 20,
       published: false, status: 'Upcoming'
     });
@@ -129,15 +158,15 @@ describe('quiz security and grading', () => {
     const started = await request(app).post(`/api/competitions/${competition._id}/start`).set('Authorization', `Bearer ${studentToken}`).send({});
     expect(started.status).toBe(200);
     const submitted = await request(app).post(`/api/attempts/${started.body.attemptId}/submit`).set('Authorization', `Bearer ${studentToken}`).send({
-      answers: [{ question: question._id, selectedOption: 1 }], manual: true
+      answers: questions.map(question => ({ question: question._id, selectedOption: 0 })), manual: true
     });
     expect(submitted.status).toBe(200);
-    expect(submitted.body.result).toMatchObject({ score: 1, correct: 1, unattempted: 0 });
+    expect(submitted.body.result).toMatchObject({ score: 10, correct: 10, unattempted: 0 });
   });
 
   it('does not expose correct answers and prevents cross-user attempt access', async () => {
-    const question = await Question.create({ subject: subject._id, statement: 'A test', options: [{ text: 'Right', isCorrect: true }, { text: 'Wrong', isCorrect: false }, { text: 'No', isCorrect: false }, { text: 'No', isCorrect: false }], marks: 2, negativeMarks: 1 });
-    const competition = await Competition.create({ title: 'Live Test', subject: subject._id, code: 'TEST1', questions: [question._id], startAt: new Date(Date.now() - 60000), endAt: new Date(Date.now() + 3600000), durationMinutes: 30, published: true, negativeMarking: true });
+    const questions = await createQuizQuestions(10, 2, 1);
+    const competition = await Competition.create({ title: 'Live Test', subject: subject._id, code: 'TEST1', questions: questions.map(question => question._id), startAt: new Date(Date.now() - 60000), endAt: new Date(Date.now() + 3600000), durationMinutes: 30, published: true, negativeMarking: true });
     await request(app).post(`/api/competitions/${competition._id}/join`).set('Authorization', `Bearer ${studentToken}`).send({ code: 'TEST1' });
     const started = await request(app).post(`/api/competitions/${competition._id}/start`).set('Authorization', `Bearer ${studentToken}`).send({});
     expect(started.status).toBe(200);
@@ -147,15 +176,15 @@ describe('quiz security and grading', () => {
   });
 
   it('applies negative marking and prevents duplicate submissions', async () => {
-    const question = await Question.create({ subject: subject._id, statement: 'A test', options: [{ text: 'Right', isCorrect: true }, { text: 'Wrong', isCorrect: false }, { text: 'No', isCorrect: false }, { text: 'No', isCorrect: false }], marks: 2, negativeMarks: 1 });
-    const competition = await Competition.create({ title: 'Grading Test', subject: subject._id, code: 'GRADE1', questions: [question._id], startAt: new Date(Date.now() - 60000), endAt: new Date(Date.now() + 3600000), durationMinutes: 30, published: true, negativeMarking: true });
+    const questions = await createQuizQuestions(10, 2, 1);
+    const competition = await Competition.create({ title: 'Grading Test', subject: subject._id, code: 'GRADE1', questions: questions.map(question => question._id), startAt: new Date(Date.now() - 60000), endAt: new Date(Date.now() + 3600000), durationMinutes: 30, published: true, negativeMarking: true });
     await request(app).post(`/api/competitions/${competition._id}/join`).set('Authorization', `Bearer ${studentToken}`).send({ code: 'GRADE1' });
     const started = await request(app).post(`/api/competitions/${competition._id}/start`).set('Authorization', `Bearer ${studentToken}`).send({});
-    const answers = [{ question: question._id, selectedOption: 1 }];
+    const answers = [{ question: questions[0]._id, selectedOption: 1 }];
     const submitted = await request(app).post(`/api/attempts/${started.body.attemptId}/submit`).set('Authorization', `Bearer ${studentToken}`).send({ answers, manual: true });
     const duplicate = await request(app).post(`/api/attempts/${started.body.attemptId}/submit`).set('Authorization', `Bearer ${studentToken}`).send({ answers, manual: true });
     expect(submitted.status).toBe(200);
-    expect(submitted.body.result.score).toBe(-1);
+    expect(submitted.body.result).toMatchObject({ score: -1, incorrect: 1, unattempted: 9 });
     expect(duplicate.status).toBe(409);
   });
 });

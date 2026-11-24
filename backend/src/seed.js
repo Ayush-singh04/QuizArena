@@ -42,14 +42,14 @@ await Competition.insertMany([
   {
     title: 'Java Sprint Challenge',
     subject: java, description: 'Test your Java fundamentals in a fast-paced timed challenge.',
-    code: 'JAVA25', questions: questionsFor(java).slice(0, 6), startAt: new Date(Date.now() - 3600000),
+    code: 'JAVA25', questions: questionsFor(java), startAt: new Date(Date.now() - 3600000),
     endAt: new Date(Date.now() + 7 * 86400000), durationMinutes: 20, difficulty: 'Medium',
     participants: [student._id]
   },
   {
     title: 'Python Fundamentals Cup',
     subject: python, description: 'A beginner-friendly competition covering Python essentials.',
-    code: 'PYTHON1', questions: questionsFor(python).slice(0, 6), startAt: new Date(Date.now() + 86400000),
+    code: 'PYTHON1', questions: questionsFor(python), startAt: new Date(Date.now() + 86400000),
     endAt: new Date(Date.now() + 3 * 86400000), durationMinutes: 15, difficulty: 'Easy',
     participants: []
   }

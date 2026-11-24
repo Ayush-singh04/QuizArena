@@ -5,7 +5,7 @@ import { Toaster, toast } from 'react-hot-toast';
 import {
   Activity, Award, BarChart3, Bell, BookOpen, BrainCircuit, ChevronRight, Code2,
   Crown, Database, LayoutDashboard, LogOut, Menu, Moon, Settings,
-  Sun, Trophy, Users, X
+  Search, Sun, Trophy, Users, X
 } from 'lucide-react';
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { sampleQuestions, sampleSubjects } from './sampleQuestions.js';
@@ -13,6 +13,7 @@ import { sampleQuestions, sampleSubjects } from './sampleQuestions.js';
 const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000/api' });
 
 const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true';
+const MIN_QUIZ_QUESTIONS = 10;
 const demoKey = 'quizarena_demo_state';
 
 function getDemoState() {
@@ -36,6 +37,7 @@ function getDemoState() {
         { _id: 'python-cup', title: 'Python Fundamentals Cup', subject: { _id: 'sample-subject-2', name: 'Python Programming' }, description: 'A beginner-friendly Python challenge.', code: 'PYTHON1', questions: sampleQuestions.map((question, index) => question.subject === 'Python Programming' ? `sample-question-${index + 1}` : null).filter(Boolean), participants: [], startAt: new Date(Date.now() + 86400000).toISOString(), endAt: new Date(Date.now() + 3 * 86400000).toISOString(), durationMinutes: 15, status: 'Upcoming', published: true, participantCount: 0, difficulty: 'Easy', negativeMarking: false, maxParticipants: 100 }
       ],
       attempts: [],
+      dailyAttempts: [],
       materials: [],
       announcements: [],
       certificates: [],
@@ -43,12 +45,18 @@ function getDemoState() {
     };
     const saved = JSON.parse(localStorage.getItem(demoKey));
     if (!saved) return defaults;
+    const competitions = saved.competitions || defaults.competitions;
     return {
       ...defaults,
       ...saved,
       subjects: [...(saved.subjects || []), ...defaults.subjects.filter(subject => !(saved.subjects || []).some(item => item.name === subject.name))],
       questions: [...(saved.questions || []), ...defaults.questions.filter(question => !(saved.questions || []).some(item => item.statement === question.statement))],
-      competitions: saved.competitions || defaults.competitions
+      competitions: competitions.map(competition => {
+        const seeded = defaults.competitions.find(item => item._id === competition._id);
+        return seeded && (competition.questions || []).length < MIN_QUIZ_QUESTIONS
+          ? { ...competition, questions: seeded.questions }
+          : competition;
+      })
     };
   } catch {
     localStorage.removeItem(demoKey);
@@ -124,7 +132,8 @@ if (DEMO_MODE) {
         }),
         leaderboard: [{ id: 'demo-1', name: 'Demo Champion', score: 920, competitions: 8 }, { id: 'demo-2', name: 'Demo Scholar', score: 860, competitions: 7 }, { id: 'demo-3', name: 'Demo Learner', score: 810, competitions: 6 }]
       } };
-      if (url.endsWith('/subjects')) return { data: { subjects: state.subjects.filter(subject => subject.active !== false) } };
+      if (url.endsWith('/admin/subjects') && method === 'get') return { data: { subjects: state.subjects } };
+      if (url.endsWith('/subjects') && method === 'get') return { data: { subjects: state.subjects.filter(subject => subject.active !== false) } };
       if (url.endsWith('/practice/questions')) {
         const questions = state.questions.filter(question =>
           (!config.params?.subject || String(question.subject?._id || question.subject) === String(config.params.subject))
@@ -148,7 +157,7 @@ if (DEMO_MODE) {
         achievements: ['Demo Learner']
       } };
       if (url.endsWith('/admin/stats')) return { data: { students: state.users.filter(user => user.role === 'student').length, subjects: state.subjects.length, questions: state.questions.length, competitions: state.competitions.length, attempts: state.attempts.length, participants: state.attempts.length, averagePerformance: 75 } };
-      if (url.endsWith('/admin/users')) return { data: { users: state.users } };
+      if (url.endsWith('/admin/users') && method === 'get') return { data: { users: state.users } };
       if (url.includes('/admin/competitions/') && url.endsWith('/participants')) {
         const competitionId = url.split('/').filter(Boolean).at(-2);
         const competition = state.competitions.find(item => item._id === competitionId);
@@ -163,13 +172,106 @@ if (DEMO_MODE) {
       }
       if (url.endsWith('/admin/questions') && method === 'get') return { data: { questions: state.questions } };
       if (url.endsWith('/admin/competitions') && method === 'get') return { data: { competitions: state.competitions } };
-      if (url.endsWith('/admin/learning')) return { data: { materials: state.materials } };
-      if (url.endsWith('/admin/announcements')) return { data: { announcements: state.announcements } };
-      if (url.endsWith('/learning')) return { data: { materials: state.materials } };
-      if (url.endsWith('/announcements')) return { data: { announcements: state.announcements } };
-      if (url.endsWith('/daily-challenge')) return { data: { challenge: { id: 'daily-demo', dateKey: new Date().toISOString().slice(0, 10), durationMinutes: 10, questions: state.questions.slice(0, 5).map(question => ({ _id: question._id, statement: question.statement, options: question.options.map(option => ({ text: option.text })) })) }, attempted: false, result: null } };
-      if (url.endsWith('/certificates')) return { data: { certificates: state.certificates } };
+      if (url.endsWith('/admin/learning') && method === 'get') return { data: { materials: state.materials } };
+      if (url.endsWith('/admin/announcements') && method === 'get') return { data: { announcements: state.announcements } };
+      if (url.endsWith('/learning') && method === 'get') return { data: { materials: state.materials } };
+      if (url.endsWith('/announcements') && method === 'get') return { data: { announcements: state.announcements.filter(item => item.published !== false) } };
+      if (url.endsWith('/daily-challenge') && method === 'get') {
+        const dateKey = new Date().toISOString().slice(0, 10);
+        const previous = (state.dailyAttempts || []).find(item => item.userId === currentUser.id && item.dateKey === dateKey);
+        const questions = state.questions.slice(0, 5);
+        return { data: {
+          challenge: { id: 'daily-demo', dateKey, durationMinutes: 10, questions: questions.map(question => ({ _id: question._id, statement: question.statement, options: question.options.map(option => ({ text: option.text })) })) },
+          attempted: Boolean(previous), result: previous?.result || null
+        } };
+      }
+      if (url.endsWith('/certificates') && method === 'get') return { data: { certificates: state.certificates } };
       if (url.endsWith('/auth/me')) return { data: { user: currentUser } };
+
+      if (method === 'put' && url.includes('/admin/users/') && url.endsWith('/status')) {
+        const userId = url.split('/').filter(Boolean).at(-2);
+        const user = state.users.find(item => (item._id || item.id) === userId);
+        if (!user) throw { response: { data: { message: 'User not found' } } };
+        user.active = Boolean(payload.active);
+        saveDemoState(state);
+        return { data: { user } };
+      }
+      if (method === 'post' && url.endsWith('/admin/subjects')) {
+        if (state.subjects.some(item => item.name.toLowerCase() === String(payload.name || '').trim().toLowerCase())) {
+          throw { response: { data: { message: 'A subject with this name already exists.' } } };
+        }
+        const subject = { ...payload, _id: `demo-subject-${Date.now()}`, active: payload.active !== false };
+        state.subjects.push(subject);
+        saveDemoState(state);
+        return { data: { subject } };
+      }
+      if (method === 'put' && url.includes('/admin/subjects/')) {
+        const subjectId = url.split('/').pop();
+        const index = state.subjects.findIndex(item => item._id === subjectId);
+        if (index < 0) throw { response: { data: { message: 'Subject not found' } } };
+        state.subjects[index] = { ...state.subjects[index], ...payload };
+        saveDemoState(state);
+        return { data: { subject: state.subjects[index] } };
+      }
+      if (method === 'delete' && url.includes('/admin/subjects/')) {
+        const subjectId = url.split('/').pop();
+        const hasQuestions = state.questions.some(question => (question.subject?._id || question.subject) === subjectId);
+        const hasMaterials = state.materials.some(material => (material.subject?._id || material.subject) === subjectId);
+        const hasCompetitions = state.competitions.some(competition => (competition.subject?._id || competition.subject) === subjectId);
+        if (hasQuestions || hasMaterials || hasCompetitions) {
+          throw { response: { data: { message: 'Archive this subject while questions, materials, or quizzes depend on it.' } } };
+        }
+        state.subjects = state.subjects.filter(item => item._id !== subjectId);
+        saveDemoState(state);
+        return { data: { message: 'Subject deleted' } };
+      }
+      if (method === 'post' && url.endsWith('/admin/learning')) {
+        const subject = state.subjects.find(item => item._id === payload.subject);
+        const material = { ...payload, _id: `demo-material-${Date.now()}`, subject: subject ? { _id: subject._id, name: subject.name } : payload.subject, createdAt: new Date().toISOString() };
+        state.materials.unshift(material);
+        saveDemoState(state);
+        return { data: { material } };
+      }
+      if (method === 'post' && url.endsWith('/admin/announcements')) {
+        const announcement = { ...payload, _id: `demo-announcement-${Date.now()}`, createdAt: new Date().toISOString() };
+        state.announcements.unshift(announcement);
+        saveDemoState(state);
+        return { data: { announcement } };
+      }
+      if (method === 'delete' && url.includes('/admin/announcements/')) {
+        const announcementId = url.split('/').pop();
+        state.announcements = state.announcements.filter(item => item._id !== announcementId);
+        saveDemoState(state);
+        return { data: { message: 'Announcement deleted' } };
+      }
+      if (method === 'post' && url.includes('/daily-challenge/') && url.endsWith('/submit')) {
+        const dateKey = new Date().toISOString().slice(0, 10);
+        state.dailyAttempts = state.dailyAttempts || [];
+        if (state.dailyAttempts.some(item => item.userId === currentUser.id && item.dateKey === dateKey)) {
+          throw { response: { data: { message: 'Today’s challenge has already been submitted.' } } };
+        }
+        const questions = state.questions.slice(0, 5);
+        let score = 0, correct = 0;
+        const answers = Array.isArray(payload.answers)
+          ? payload.answers
+          : Object.entries(payload.answers || {}).map(([question, selectedOption]) => ({ question, selectedOption }));
+        for (const answer of answers) {
+          const question = questions.find(item => item._id === answer.question);
+          if (question?.options[Number(answer.selectedOption)]?.isCorrect) {
+            score += question.marks || 1;
+            correct++;
+          }
+        }
+        const result = { score, correct, total: questions.length, xpAwarded: 10 + correct * 2 };
+        state.dailyAttempts.push({ userId: currentUser.id, dateKey, result });
+        const student = state.users.find(item => (item._id || item.id) === currentUser.id);
+        if (student) {
+          student.xp = (student.xp || 0) + result.xpAwarded;
+          localStorage.setItem('quizarena_user', JSON.stringify({ ...currentUser, xp: student.xp }));
+        }
+        saveDemoState(state);
+        return { data: { message: 'Daily challenge submitted', result } };
+      }
 
       if (method === 'post' && url.endsWith('/admin/questions')) {
         const subject = state.subjects.find(item => item._id === payload.subject);
@@ -194,6 +296,9 @@ if (DEMO_MODE) {
         return { data: { message: 'Question deleted' } };
       }
       if (method === 'post' && url.endsWith('/admin/competitions')) {
+        if ((payload.questions || []).length < MIN_QUIZ_QUESTIONS) {
+          throw { response: { data: { message: `A quiz must contain at least ${MIN_QUIZ_QUESTIONS} questions.` } } };
+        }
         const subject = state.subjects.find(item => item._id === payload.subject);
         const competition = {
           ...payload,
@@ -210,6 +315,9 @@ if (DEMO_MODE) {
         return { data: { competition } };
       }
       if (method === 'put' && url.includes('/admin/competitions/')) {
+        if ((payload.questions || []).length < MIN_QUIZ_QUESTIONS) {
+          throw { response: { data: { message: `A quiz must contain at least ${MIN_QUIZ_QUESTIONS} questions.` } } };
+        }
         const competitionId = url.split('/').pop();
         const index = state.competitions.findIndex(item => item._id === competitionId);
         if (index < 0) throw { response: { data: { message: 'Competition not found' } } };
@@ -228,7 +336,7 @@ if (DEMO_MODE) {
         const competitionId = url.split('/').filter(Boolean).at(-2);
         const competition = state.competitions.find(item => item._id === competitionId);
         if (!competition) throw { response: { data: { message: 'Competition not found' } } };
-        if (!competition.questions.length) throw { response: { data: { message: 'Add at least one question before starting this test' } } };
+        if (competition.questions.length < MIN_QUIZ_QUESTIONS) throw { response: { data: { message: `Assign at least ${MIN_QUIZ_QUESTIONS} questions before starting this test.` } } };
         competition.startAt = new Date().toISOString();
         if (new Date(competition.endAt) <= new Date()) competition.endAt = new Date(Date.now() + competition.durationMinutes * 60000).toISOString();
         competition.status = 'Live';
@@ -259,7 +367,7 @@ if (DEMO_MODE) {
         if (!competition) throw { response: { data: { message: 'Competition not found' } } };
         if (!(competition.participants || []).includes(currentUser.id)) throw { response: { data: { message: 'Join the competition before starting' } } };
         const questions = state.questions.filter(question => (competition.questions || []).includes(question._id));
-        if (!questions.length) throw { response: { data: { message: 'This competition has no questions yet' } } };
+        if (questions.length < MIN_QUIZ_QUESTIONS) throw { response: { data: { message: `This quiz needs at least ${MIN_QUIZ_QUESTIONS} questions.` } } };
         let attempt = state.attempts.find(item => item.userId === currentUser.id && item.competitionId === id && item.status === 'in-progress');
         if (!attempt) {
           attempt = { _id: `demo-attempt-${Date.now()}`, userId: currentUser.id, competitionId: id, title: competition.title, answers: [], status: 'in-progress', startedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + competition.durationMinutes * 60000).toISOString() };
@@ -299,10 +407,11 @@ if (DEMO_MODE) {
           submittedAt: new Date().toISOString(),
           status: 'submitted'
         });
-        const student = state.users.find(user => user.id === currentUser.id);
+        const student = state.users.find(user => (user._id || user.id) === currentUser.id);
         if (student) {
           student.points = (student.points || 0) + score;
           student.xp = (student.xp || 0) + 25 + correct * 5;
+          localStorage.setItem('quizarena_user', JSON.stringify({ ...currentUser, points: student.points, xp: student.xp }));
         }
         saveDemoState(state);
         return { data: { message: 'Submitted successfully', result: { score, maxScore, correct, incorrect, unattempted, accuracy: attempt.accuracy, timeTakenMinutes: Math.max(1, Math.round((Date.now() - new Date(attempt.startedAt)) / 60000)) } } };
@@ -548,6 +657,8 @@ function Dashboard({ theme, setTheme, page = 'dashboard' }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [data, setData] = useState({});
   const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
   const user = JSON.parse(localStorage.getItem('quizarena_user') || '{}');
   const isAdmin = user.role === 'admin';
 
@@ -576,7 +687,24 @@ function Dashboard({ theme, setTheme, page = 'dashboard' }) {
       else if (page === 'learning') setData({ materials: demo.materials });
       else if (page === 'certificates') setData({ certificates: demo.certificates });
       else setData({
-        stats: { attempted: demo.attempts.length, averageScore: 75, points: user.points || 240, accuracy: 75, xp: 340, level: 2, rank: 1, competitions: demo.attempts.length },
+        stats: (() => {
+          const attempts = demo.attempts.filter(attempt => attempt.status === 'submitted');
+          const maxScore = attempts.reduce((sum, attempt) => sum + (attempt.maxScore || 0), 0);
+          const score = attempts.reduce((sum, attempt) => sum + (attempt.score || 0), 0);
+          const answered = attempts.reduce((sum, attempt) => sum + (attempt.correct || 0) + (attempt.incorrect || 0), 0);
+          const correct = attempts.reduce((sum, attempt) => sum + (attempt.correct || 0), 0);
+          const demoUser = demo.users.find(item => (item._id || item.id) === user.id);
+          return {
+            attempted: attempts.length,
+            averageScore: maxScore ? Math.round(score / maxScore * 100) : 0,
+            points: demoUser?.points ?? user.points ?? 0,
+            accuracy: answered ? Math.round(correct / answered * 100) : 0,
+            xp: demoUser?.xp || 0,
+            level: 2,
+            rank: 1,
+            competitions: attempts.length
+          };
+        })(),
         recentAttempts: demo.attempts,
         upcomingCompetitions: demo.competitions.filter(item => item.status !== 'Completed')
       });
@@ -589,7 +717,7 @@ function Dashboard({ theme, setTheme, page = 'dashboard' }) {
       : page === 'admin-users'
         ? '/admin/users'
         : page === 'admin-subjects'
-          ? '/subjects'
+          ? '/admin/subjects'
         : page === 'admin-learning'
           ? '/admin/learning'
         : page === 'admin-announcements'
@@ -623,6 +751,20 @@ function Dashboard({ theme, setTheme, page = 'dashboard' }) {
   const navItems = isAdmin
     ? [['Dashboard', 'admin', LayoutDashboard], ['User Management', 'admin-users', Users], ['Subjects', 'admin-subjects', Database], ['Questions', 'admin-questions', BrainCircuit], ['Competitions', 'admin-competitions', Trophy], ['Learning Content', 'admin-learning', BookOpen], ['Announcements', 'admin-announcements', Bell], ['Results', 'admin-results', BarChart3]]
     : [['Dashboard', 'dashboard', LayoutDashboard], ['Competitions', 'competitions', Trophy], ['Practice', 'practice', BrainCircuit], ['Learn', 'learn', BookOpen], ['Daily Challenge', 'daily-challenge', Activity], ['Leaderboard', 'leaderboard', Crown], ['My Results', 'results', BarChart3], ['Certificates', 'certificates', Award], ['Profile', 'profile', Settings]];
+  const searchResults = navItems.filter(([label]) => label.toLowerCase().includes(searchTerm.trim().toLowerCase())).slice(0, 5);
+  const openPage = target => {
+    const path = isAdmin
+      ? target === 'admin' ? '/admin' : `/admin/${target.replace('admin-', '')}`
+      : target === 'dashboard' ? '/dashboard' : `/${target}`;
+    navigate(path);
+    setSearchTerm('');
+    setSearchOpen(false);
+    setMobileOpen(false);
+  };
+  const submitSearch = event => {
+    event.preventDefault();
+    if (searchResults[0]) openPage(searchResults[0][1]);
+  };
 
   const logout = () => {
     localStorage.removeItem('quizarena_token');
@@ -632,9 +774,10 @@ function Dashboard({ theme, setTheme, page = 'dashboard' }) {
 
   return (
     <div className="app-shell">
+      {mobileOpen && <button className="sidebar-backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
       <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
         <button className="brand sidebar-brand" onClick={() => navigate(isAdmin ? '/admin' : '/dashboard')}><span className="brand-mark"><BrainCircuit size={22} /></span>QuizArena</button>
-        <button className="close-sidebar" onClick={() => setMobileOpen(false)}><X size={20} /></button>
+        <button className="close-sidebar" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X size={20} /></button>
         <nav>
           {navItems.map(([label, target, Icon]) => <button key={label} className={page === target || (page === 'dashboard' && target === 'dashboard') ? 'active' : ''} onClick={() => {
             if (isAdmin) navigate(target === 'admin' ? '/admin' : `/admin/${target.replace('admin-', '')}`);
@@ -646,13 +789,21 @@ function Dashboard({ theme, setTheme, page = 'dashboard' }) {
       </aside>
       <main className="dashboard-main">
         <header className="dashboard-header">
-          <button className="menu-btn" onClick={() => setMobileOpen(true)}><Menu size={20} /></button>
-          <div className="header-search"><input placeholder="Search..." /></div>
-          <div className="header-actions"><button className="icon-btn" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}</button><button className="icon-btn notification"><Bell size={18} /><i /></button><div className="avatar">{user.name?.[0] || 'U'}</div></div>
+          <button className="menu-btn" aria-label="Open navigation" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu size={20} /></button>
+          <div className="header-search">
+            <form role="search" onSubmit={submitSearch}>
+              <input aria-label="Search pages" placeholder="Search pages..." value={searchTerm} onFocus={() => setSearchOpen(true)} onChange={event => { setSearchTerm(event.target.value); setSearchOpen(true); }} onKeyDown={event => { if (event.key === 'Escape') setSearchOpen(false); }} />
+              <button type="submit" aria-label="Open first matching page" disabled={!searchResults.length}><Search size={17} /></button>
+            </form>
+            {searchOpen && searchTerm.trim() && <div className="search-results" role="listbox" aria-label="Matching pages">
+              {searchResults.length ? searchResults.map(([label, target]) => <button type="button" role="option" aria-selected="false" key={target} onClick={() => openPage(target)}>{label}</button>) : <span>No matching pages</span>}
+            </div>}
+          </div>
+          <div className="header-actions"><button className="icon-btn" aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}</button><NotificationMenu /><div className="avatar" aria-label={user.name || 'User'}>{user.name?.[0] || 'U'}</div></div>
         </header>
         <div className="dashboard-content">
           {loading ? <div className="loader">Loading...</div> : (
-            isAdmin && page === 'admin' ? <AdminOverview data={data} /> :
+            isAdmin && page === 'admin' ? <AdminOverview data={data} navigate={navigate} /> :
             isAdmin && page === 'admin-competitions' ? <AdminCompetitions /> :
             isAdmin && page === 'admin-participants' ? <AdminParticipants data={data} /> :
             isAdmin && page === 'admin-questions' ? <AdminQuestions /> :
@@ -677,6 +828,37 @@ function Dashboard({ theme, setTheme, page = 'dashboard' }) {
   );
 }
 
+function NotificationMenu() {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [announcements, setAnnouncements] = useState([]);
+  const toggle = async () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    setLoading(true);
+    try {
+      const { data } = await api.get('/announcements', { headers: tokenHeaders() });
+      setAnnouncements(data.announcements || []);
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Unable to load notifications');
+    } finally {
+      setLoading(false);
+    }
+  };
+  return <div className="notification-wrapper">
+    <button className="icon-btn notification" aria-label="Notifications" aria-expanded={open} onClick={toggle}><Bell size={18} /></button>
+    {open && <section className="notification-popover" role="dialog" aria-label="Latest announcements">
+      <div><h3>Latest announcements</h3><button className="close-notifications" aria-label="Close notifications" onClick={() => setOpen(false)}><X size={16} /></button></div>
+      {loading ? <p>Loading updates...</p> : announcements.length
+        ? announcements.slice(0, 5).map(item => <article key={item._id}><strong>{item.title}</strong><p>{item.message}</p></article>)
+        : <p>No announcements yet.</p>}
+    </section>}
+  </div>;
+}
+
 function StudentDashboard({ data, user, navigate }) {
   const stats = data.stats || {};
   const cards = [
@@ -693,7 +875,7 @@ function StudentDashboard({ data, user, navigate }) {
     <div>
       <div className="page-heading"><div><span>STUDENT DASHBOARD</span><h1>Welcome back, {user.name?.split(' ')[0] || 'Student'} 👋</h1><p>Here is how your learning journey is progressing.</p></div><button className="btn-primary" onClick={() => navigate('/competitions')}>Join a competition</button></div>
       <div className="stat-grid">{cards.map(([label, value, Icon, tone]) => <article className="stat-card" key={label}><div className={`stat-icon ${tone}`}><Icon size={21} /></div><div><span>{label}</span><strong>{value}</strong></div></article>)}</div>
-      <div className="dashboard-grid"><section className="panel performance"><div className="panel-head"><div><span>PERFORMANCE</span><h3>Weekly progress</h3></div><select><option>This week</option></select></div><div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData}><defs><linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#5b5fe9" stopOpacity={0.25}/><stop offset="95%" stopColor="#5b5fe9" stopOpacity={0}/></linearGradient></defs><XAxis dataKey="name" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Area type="monotone" dataKey="score" stroke="#5b5fe9" strokeWidth={3} fill="url(#chartFill)"/></AreaChart></ResponsiveContainer></div></section>
+      <div className="dashboard-grid"><section className="panel performance"><div className="panel-head"><div><span>PERFORMANCE</span><h3>Weekly progress</h3></div></div><div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData}><defs><linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#5b5fe9" stopOpacity={0.25}/><stop offset="95%" stopColor="#5b5fe9" stopOpacity={0}/></linearGradient></defs><XAxis dataKey="name" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false}/><Tooltip/><Area type="monotone" dataKey="score" stroke="#5b5fe9" strokeWidth={3} fill="url(#chartFill)"/></AreaChart></ResponsiveContainer></div></section>
       <section className="panel upcoming"><div className="panel-head"><div><span>COMPETITIONS</span><h3>Upcoming</h3></div></div>{(data.upcomingCompetitions || []).slice(0, 4).map(c => <div className="upcoming-row" key={c._id}><div className="calendar"><strong>{new Date(c.startAt).getDate()}</strong><span>{new Date(c.startAt).toLocaleString('en', { month: 'short' })}</span></div><div><h4>{c.title}</h4><p>{c.subject?.name} · {c.durationMinutes} min</p></div><button onClick={() => navigate('/competitions')}><ChevronRight size={16}/></button></div>)}</section></div>
     </div>
   );
@@ -815,11 +997,11 @@ function AdminUsers({ data: initialUsers }) {
   const [search, setSearch] = useState('');
   const load = () => api.get('/admin/users', { headers: tokenHeaders() }).then(r => setUsers(r.data.users || [])).catch(error => toast.error(error.response?.data?.message || 'Unable to load users'));
   const toggle = async user => {
-    try { await api.put(`/admin/users/${user._id}/status`, { active: !user.active }, { headers: tokenHeaders() }); toast.success(user.active ? 'Account deactivated' : 'Account activated'); load(); }
+    try { await api.put(`/admin/users/${user._id || user.id}/status`, { active: !user.active }, { headers: tokenHeaders() }); toast.success(user.active ? 'Account deactivated' : 'Account activated'); await load(); }
     catch (error) { toast.error(error.response?.data?.message || 'Unable to update account'); }
   };
   const visible = users.filter(user => `${user.name} ${user.email}`.toLowerCase().includes(search.toLowerCase()));
-  return <div><div className="page-heading"><div><span>USER MANAGEMENT</span><h1>Registered users</h1><p>Search accounts and manage activation status.</p></div></div><div className="panel admin-table"><input className="admin-search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or email" /><table><thead><tr><th>Student</th><th>Role</th><th>XP</th><th>Status</th><th>Action</th></tr></thead><tbody>{visible.map(user => <tr key={user._id}><td><strong>{user.name}</strong><small>{user.email}</small></td><td>{user.role}</td><td>{user.xp || 0}</td><td>{user.active ? 'Active' : 'Deactivated'}</td><td><button className="btn-secondary" onClick={() => toggle(user)}>{user.active ? 'Deactivate' : 'Activate'}</button></td></tr>)}</tbody></table></div></div>;
+  return <div><div className="page-heading"><div><span>USER MANAGEMENT</span><h1>Registered users</h1><p>Search accounts and manage activation status.</p></div></div><div className="panel admin-table"><input className="admin-search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or email" /><table><thead><tr><th>Student</th><th>Role</th><th>XP</th><th>Status</th><th>Action</th></tr></thead><tbody>{visible.map(user => <tr key={user._id || user.id}><td><strong>{user.name}</strong><small>{user.email}</small></td><td>{user.role}</td><td>{user.xp || 0}</td><td>{user.active ? 'Active' : 'Deactivated'}</td><td><button className="btn-secondary" onClick={() => toggle(user)}>{user.active ? 'Deactivate' : 'Activate'}</button></td></tr>)}</tbody></table></div></div>;
 }
 
 function AdminSubjects({ data: initialSubjects }) {
@@ -827,7 +1009,7 @@ function AdminSubjects({ data: initialSubjects }) {
   const [form, setForm] = useState({ name: '', description: '', topics: '', active: true });
   const [search,setSearch]=useState('');
   const [editingId,setEditingId]=useState(null);
-  const load = () => api.get('/subjects', { headers: tokenHeaders() }).then(r => setSubjects(r.data.subjects||[])).catch(error => toast.error(error.response?.data?.message || 'Unable to load subjects'));
+  const load = () => api.get('/admin/subjects', { headers: tokenHeaders() }).then(r => setSubjects(r.data.subjects||[])).catch(error => toast.error(error.response?.data?.message || 'Unable to load subjects'));
   const save = async event => {
     event.preventDefault();
     const payload={...form,topics:form.topics.split(',').map(topic=>topic.trim()).filter(Boolean)};
@@ -873,6 +1055,7 @@ function AdminQuestions() {
   const [subjects, setSubjects] = useState([]);
   const [questions, setQuestions] = useState([]);
   const [editingId, setEditingId] = useState(null);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     subject: '', topic: '', statement: '', difficulty: 'Medium',
     explanation: '', marks: 1, negativeMarks: 0,
@@ -895,6 +1078,7 @@ function AdminQuestions() {
   }, [subjects]);
   const save = async event => {
     event.preventDefault();
+    setSaving(true);
     const payload = {
       ...form,
       options: form.options.map((text, index) => ({ text, isCorrect: index === Number(form.correctOption) }))
@@ -904,8 +1088,9 @@ function AdminQuestions() {
       else await api.post('/admin/questions', payload, { headers: tokenHeaders() });
       toast.success(editingId ? 'Question updated' : 'Question created');
       reset();
-      load();
+      await load();
     } catch (error) { toast.error(error.response?.data?.message || 'Unable to save question'); }
+    finally { setSaving(false); }
   };
   const edit = question => {
     setEditingId(question._id);
@@ -941,7 +1126,7 @@ function AdminQuestions() {
         {form.options.map((option, index) => <label key={index}>Option {String.fromCharCode(65 + index)}<div className="option-editor"><input required value={option} onChange={e => setForm({...form, options: form.options.map((item, optionIndex) => optionIndex === index ? e.target.value : item)})} /><input type="radio" name="correctOption" aria-label={`Mark option ${String.fromCharCode(65 + index)} correct`} checked={Number(form.correctOption) === index} onChange={() => setForm({...form, correctOption: index})} /></div></label>)}
         <div className="admin-form-grid"><label>Difficulty<select value={form.difficulty} onChange={e => setForm({...form, difficulty: e.target.value})}><option>Easy</option><option>Medium</option><option>Hard</option></select></label><label>Marks<input type="number" min="0" value={form.marks} onChange={e => setForm({...form, marks: Number(e.target.value)})} /></label><label>Negative marks<input type="number" min="0" value={form.negativeMarks} onChange={e => setForm({...form, negativeMarks: Number(e.target.value)})} /></label></div>
         <label>Explanation<textarea value={form.explanation} onChange={e => setForm({...form, explanation: e.target.value})} placeholder="Explain the correct answer" /></label>
-        <div className="admin-form-actions">{editingId && <button type="button" className="btn-secondary" onClick={reset}>Cancel edit</button>}<button className="btn-primary" type="submit">{editingId ? 'Save changes' : 'Add question'}</button></div>
+        <div className="admin-form-actions">{editingId && <button type="button" className="btn-secondary" onClick={reset}>Cancel edit</button>}<button className="btn-primary" type="submit" disabled={saving}>{saving ? 'Saving...' : editingId ? 'Save changes' : 'Add question'}</button></div>
       </form>
       <div className="panel admin-list"><h3>Question bank</h3>{questions.length ? questions.map(question => <article className="admin-list-row" key={question._id}><div><h4>{question.statement}</h4><p>{question.subject?.name} · {question.difficulty} · {question.marks} mark(s)</p></div><div><button className="btn-secondary" onClick={() => edit(question)}>Edit</button><button className="danger-button" onClick={() => remove(question)}>Delete</button></div></article>) : <div className="empty-card">No questions have been created.</div>}</div>
     </div>
@@ -949,10 +1134,12 @@ function AdminQuestions() {
 }
 
 function AdminCompetitions() {
+  const navigate = useNavigate();
   const [subjects, setSubjects] = useState([]);
   const [questions, setQuestions] = useState([]);
   const [competitions, setCompetitions] = useState([]);
   const [editingId, setEditingId] = useState(null);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     title: '', subject: '', description: '', startAt: '', endAt: '',
     durationMinutes: 30, difficulty: 'Medium', status: 'Upcoming',
@@ -978,15 +1165,23 @@ function AdminCompetitions() {
   };
   const save = async event => {
     event.preventDefault();
+    const selectedQuestionIds = [...new Set(form.questions)];
+    if (selectedQuestionIds.length < MIN_QUIZ_QUESTIONS) {
+      toast.error(`Select at least ${MIN_QUIZ_QUESTIONS} questions for this quiz.`);
+      return;
+    }
     const selectedQuestions = questions.filter(question => form.questions.includes(question._id));
     const totalMarks = selectedQuestions.reduce((sum, question) => sum + (Number(question.marks) || 0), 0);
-    const payload = { ...form, totalMarks: form.totalMarks ? Number(form.totalMarks) : totalMarks };
+    const payload = { ...form, questions: selectedQuestionIds, totalMarks: form.totalMarks ? Number(form.totalMarks) : totalMarks };
+    setSaving(true);
     try {
       if (editingId) await api.put(`/admin/competitions/${editingId}`, payload, { headers: tokenHeaders() });
       else await api.post('/admin/competitions', payload, { headers: tokenHeaders() });
       toast.success(editingId ? 'Competition updated' : 'Competition created');
-      reset(); load();
+      reset();
+      await load();
     } catch (error) { toast.error(error.response?.data?.message || 'Unable to save competition'); }
+    finally { setSaving(false); }
   };
   const edit = competition => {
     setEditingId(competition._id);
@@ -1004,14 +1199,14 @@ function AdminCompetitions() {
   };
   const remove = async competition => {
     if (!window.confirm(`Delete "${competition.title}"? This cannot be undone.`)) return;
-    try { await api.delete(`/admin/competitions/${competition._id}`, { headers: tokenHeaders() }); toast.success('Competition deleted'); load(); }
+    try { await api.delete(`/admin/competitions/${competition._id}`, { headers: tokenHeaders() }); toast.success('Competition deleted'); await load(); }
     catch (error) { toast.error(error.response?.data?.message || 'Unable to delete competition'); }
   };
   const activate = async competition => {
     try {
       await api.post(`/admin/competitions/${competition._id}/activate`, {}, { headers: tokenHeaders() });
       toast.success(`${competition.title} is live. Share code ${competition.code} with students.`);
-      load();
+      await load();
     } catch (error) { toast.error(error.response?.data?.message || 'Unable to start test'); }
   };
   const copyCode = async code => {
@@ -1035,17 +1230,21 @@ function AdminCompetitions() {
         <div className="admin-form-grid"><label>Duration (minutes)<input required type="number" min="1" value={form.durationMinutes} onChange={e => setForm({...form, durationMinutes: Number(e.target.value)})} /></label><label>Maximum participants<input type="number" min="0" value={form.maxParticipants} onChange={e => setForm({...form, maxParticipants: Number(e.target.value)})} /></label><label>Total marks<input type="number" min="0" value={form.totalMarks} onChange={e => setForm({...form, totalMarks: Number(e.target.value)})} /></label></div>
         <div className="admin-form-grid"><label>Status<select value={form.status} onChange={e => setForm({...form, status: e.target.value})}><option>Draft</option><option>Upcoming</option><option>Live</option><option>Completed</option></select></label><label>Publish<select value={String(form.published)} onChange={e => setForm({...form, published: e.target.value === 'true'})}><option value="true">Published</option><option value="false">Unpublished</option></select></label></div>
         <div className="checkbox-grid"><label><input type="checkbox" checked={form.negativeMarking} onChange={e => setForm({...form, negativeMarking: e.target.checked})} /> Negative marking</label><label><input type="checkbox" checked={form.randomizeQuestions} onChange={e => setForm({...form, randomizeQuestions: e.target.checked})} /> Randomize questions</label><label><input type="checkbox" checked={form.randomizeOptions} onChange={e => setForm({...form, randomizeOptions: e.target.checked})} /> Randomize options</label></div>
-        <div className="question-selector"><h4>Assign questions</h4>{questions.filter(question => !form.subject || !question.subject || String(question.subject._id || question.subject) === String(form.subject)).map(question => <label key={question._id}><input type="checkbox" checked={form.questions.includes(question._id)} onChange={() => toggleQuestion(question._id)} /><span>{question.statement}</span></label>)}</div>
-        <div className="admin-form-actions">{editingId && <button type="button" className="btn-secondary" onClick={reset}>Cancel edit</button>}<button className="btn-primary" type="submit">{editingId ? 'Save changes' : 'Create competition'}</button></div>
+        <div className="question-selector"><h4>Assign questions ({form.questions.length}/{MIN_QUIZ_QUESTIONS} minimum)</h4>{questions.filter(question => !form.subject || !question.subject || String(question.subject._id || question.subject) === String(form.subject)).map(question => <label key={question._id}><input type="checkbox" checked={form.questions.includes(question._id)} onChange={() => toggleQuestion(question._id)} /><span>{question.statement}</span></label>)}</div>
+        <div className="admin-form-actions">{editingId && <button type="button" className="btn-secondary" onClick={reset}>Cancel edit</button>}<button className="btn-primary" type="submit" disabled={saving}>{saving ? 'Saving...' : editingId ? 'Save changes' : 'Create competition'}</button></div>
       </form>
-      <div className="panel admin-list"><h3>Competitions</h3>{competitions.length ? competitions.map(competition => <article className="admin-list-row" key={competition._id}><div><h4>{competition.title}</h4><p>{competition.subject?.name} · {competition.status || 'Upcoming'} · {competition.published ? 'Published' : 'Unpublished'}</p><p className="test-code-display">Student test code: <strong>{competition.code}</strong> <button type="button" className="text-btn" onClick={() => copyCode(competition.code)}>Copy code</button></p></div><div>{competition.status !== 'Live' && <button className="btn-primary" disabled={!competition.questions?.length} title={!competition.questions?.length ? 'Assign at least one question before starting' : ''} onClick={() => activate(competition)}>Start test</button>}<button className="btn-secondary" onClick={() => window.location.href=`/admin/competitions/${competition._id}/participants`}>Participants</button><button className="btn-secondary" onClick={() => edit(competition)}>Edit</button><button className="danger-button" onClick={() => remove(competition)}>Delete</button></div></article>) : <div className="empty-card">No competitions have been created.</div>}</div>
+      <div className="panel admin-list"><h3>Competitions</h3>{competitions.length ? competitions.map(competition => {
+        const questionCount = competition.questions?.length || 0;
+        return <article className="admin-list-row" key={competition._id}><div><h4>{competition.title}</h4><p>{competition.subject?.name} · {competition.status || 'Upcoming'} · {competition.published ? 'Published' : 'Unpublished'} · {questionCount} questions</p><p className="test-code-display">Student test code: <strong>{competition.code}</strong> <button type="button" className="text-btn" onClick={() => copyCode(competition.code)}>Copy code</button></p></div><div>{competition.status !== 'Live' && <button className="btn-primary" disabled={questionCount < MIN_QUIZ_QUESTIONS} title={questionCount < MIN_QUIZ_QUESTIONS ? `Assign at least ${MIN_QUIZ_QUESTIONS} questions before starting` : ''} onClick={() => activate(competition)}>Start test</button>}<button className="btn-secondary" onClick={() => navigate(`/admin/competitions/${competition._id}/participants`)}>Participants</button><button className="btn-secondary" onClick={() => edit(competition)}>Edit</button><button className="danger-button" onClick={() => remove(competition)}>Delete</button></div></article>;
+      }) : <div className="empty-card">No competitions have been created.</div>}</div>
     </div>
   </div>;
 }
 
-function AdminOverview({ data }) {
+function AdminOverview({ data, navigate }) {
   const cards = [['Registered students', data.students, Users, 'blue'], ['Subjects', data.subjects, Database, 'violet'], ['Questions', data.questions, BrainCircuit, 'green'], ['Competitions', data.competitions, Trophy, 'amber']];
-  return <div><div className="page-heading"><div><span>ADMIN CONTROL</span><h1>Platform overview</h1><p>Monitor users, content, and competition activity.</p></div></div><div className="stat-grid">{cards.map(([label, value, Icon, tone]) => <article className="stat-card" key={label}><div className={`stat-icon ${tone}`}><Icon size={21}/></div><div><span>{label}</span><strong>{value || 0}</strong></div></article>)}</div><div className="dashboard-grid"><section className="panel"><div className="panel-head"><div><span>ACTIVITY</span><h3>Platform growth</h3></div></div><div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={[{name:'Week 1',users:2},{name:'Week 2',users:5},{name:'Week 3',users:7},{name:'Week 4',users:11}]}><XAxis dataKey="name"/><YAxis/><Tooltip/><Area type="monotone" dataKey="users" stroke="#5b5fe9" fill="#e9eaff"/></AreaChart></ResponsiveContainer></div></section><section className="panel"><div className="panel-head"><div><span>OPERATIONS</span><h3>Management modules</h3></div></div><div className="admin-actions"><button><Users/><span>User management</span></button><button><Database/><span>Subjects</span></button><button><BrainCircuit/><span>Questions</span></button><button><Trophy/><span>Competitions</span></button></div></section></div></div>;
+  const modules = [['User management', 'users', Users], ['Subjects', 'subjects', Database], ['Questions', 'questions', BrainCircuit], ['Competitions', 'competitions', Trophy]];
+  return <div><div className="page-heading"><div><span>ADMIN CONTROL</span><h1>Platform overview</h1><p>Monitor users, content, and competition activity.</p></div></div><div className="stat-grid">{cards.map(([label, value, Icon, tone]) => <article className="stat-card" key={label}><div className={`stat-icon ${tone}`}><Icon size={21}/></div><div><span>{label}</span><strong>{value || 0}</strong></div></article>)}</div><div className="dashboard-grid"><section className="panel"><div className="panel-head"><div><span>ACTIVITY</span><h3>Platform growth</h3></div></div><div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={[{name:'Week 1',users:2},{name:'Week 2',users:5},{name:'Week 3',users:7},{name:'Week 4',users:11}]}><XAxis dataKey="name"/><YAxis/><Tooltip/><Area type="monotone" dataKey="users" stroke="#5b5fe9" fill="#e9eaff"/></AreaChart></ResponsiveContainer></div></section><section className="panel"><div className="panel-head"><div><span>OPERATIONS</span><h3>Management modules</h3></div></div><div className="admin-actions">{modules.map(([label, route, Icon]) => <button key={route} onClick={() => navigate(`/admin/${route}`)}><Icon/><span>{label}</span></button>)}</div></section></div></div>;
 }
 
 function QuizPage() {
