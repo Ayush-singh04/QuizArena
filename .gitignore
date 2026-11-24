@@ -5,3 +5,5 @@ dist/
 mongodb-data/
 .vite/
 .vitest-cache/
+.vercel
+.env.local
